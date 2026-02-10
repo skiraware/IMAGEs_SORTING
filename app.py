@@ -122,6 +122,53 @@ def get_safe_filename_date(folder, date_obj, original_ext):
 def index():
     return send_file('index.html')
 
+@app.route('/api/browse', methods=['POST'])
+def browse_folder():
+    """
+    Simulates 'ls' and helps with directory navigation.
+    Input: { "path": "/path/to/folder" } (Optional, defaults to User Home)
+    Output: { "current_path": "...", "folders": [...], "files": [...], "parent": "..." }
+    """
+    data = request.json
+    path = data.get('path')
+    
+    # Default to user home directory if no path provided (avoids Root level start)
+    if not path:
+        path = os.path.expanduser("~")
+    
+    # Handle ".." or simple cd logic if passed in path string, 
+    # though os.path.abspath handles ".." resolution automatically.
+    
+    if not os.path.exists(path):
+        return jsonify({"error": "Path not found"}), 404
+        
+    if not os.path.isdir(path):
+        return jsonify({"error": "Not a directory"}), 400
+        
+    try:
+        # Get directory contents
+        items = os.listdir(path)
+        items.sort()
+        
+        # Separate folders and compatible files
+        folders = [i for i in items if os.path.isdir(os.path.join(path, i)) and not i.startswith('.')]
+        
+        extensions = ('.jpg', '.jpeg', '.png', '.heic', '.mov', '.mp4', '.gif')
+        files = [i for i in items if os.path.isfile(os.path.join(path, i)) and not i.startswith('.') and i.lower().endswith(extensions)]
+        
+        abs_path = os.path.abspath(path)
+        parent = os.path.dirname(abs_path)
+        
+        return jsonify({
+            "current_path": abs_path,
+            "folders": folders,
+            "files": files, # Just names to show "content exists"
+            "parent": parent if parent != abs_path else None,
+            "sep": os.sep
+        })
+    except Exception as e:
+        return jsonify({"error": f"Access denied or error: {str(e)}"}), 500
+
 @app.route('/api/scan', methods=['POST'])
 def scan():
     data = request.json

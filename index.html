@@ -11,10 +11,29 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       body {
-        background-color: #1a1a1a;
-        color: white;
+        background-color: #0d0d0d;
+        color: #33ff00;
+        font-family: "Courier New", Courier, monospace;
         overflow: hidden;
       }
+      .terminal-cursor {
+        animation: blink 1s step-end infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      /* App Styles Override for GUI Mode */
+      .gui-mode {
+        font-family: sans-serif;
+        color: white;
+      }
+      .gui-mode body {
+        background-color: #1a1a1a;
+      }
+
       .loading-spinner {
         border-top-color: #3498db;
         animation: spinner 1.5s linear infinite;
@@ -32,7 +51,7 @@
         height: 8px;
       }
       .custom-scroll::-webkit-scrollbar-track {
-        background: #333;
+        background: #111;
       }
       .custom-scroll::-webkit-scrollbar-thumb {
         background: #555;
@@ -69,23 +88,179 @@
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" class="h-screen w-screen"></div>
 
     <script type="text/babel">
       const { useState, useEffect, useRef } = React;
 
+      // --- TERMINAL COMPONENT ---
+      function Terminal({ onStart }) {
+        const [history, setHistory] = useState([
+          { type: "output", text: "Photo Sorter CLI v1.0" },
+          {
+            type: "output",
+            text: 'Type "ls" to view files, "cd <folder>" to move.',
+          },
+          {
+            type: "output",
+            text: 'Type "start" or "select" to begin sorting the current folder.',
+          },
+        ]);
+        const [input, setInput] = useState("");
+        const [currentPath, setCurrentPath] = useState("");
+        const [dirData, setDirData] = useState({
+          folders: [],
+          files: [],
+          parent: null,
+        });
+        const endRef = useRef(null);
+        const inputRef = useRef(null);
+
+        const fetchDir = async (path) => {
+          try {
+            const res = await fetch("/api/browse", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ path }),
+            });
+            const data = await res.json();
+            if (data.error) {
+              setHistory((h) => [...h, { type: "error", text: data.error }]);
+            } else {
+              setCurrentPath(data.current_path);
+              setDirData(data);
+            }
+          } catch (e) {
+            setHistory((h) => [
+              ...h,
+              { type: "error", text: "Connection Error" },
+            ]);
+          }
+        };
+
+        useEffect(() => {
+          fetchDir(null);
+        }, []);
+        useEffect(() => {
+          endRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, [history]);
+        useEffect(() => {
+          inputRef.current?.focus();
+        }, []);
+
+        const handleCommand = async (e) => {
+          if (e.key !== "Enter") return;
+          const cmdLine = input.trim();
+          setHistory((h) => [
+            ...h,
+            { type: "command", text: cmdLine, path: currentPath },
+          ]);
+          setInput("");
+          if (!cmdLine) return;
+
+          const parts = cmdLine.split(" ");
+          const cmd = parts[0].toLowerCase();
+          const args = parts.slice(1).join(" ");
+
+          if (cmd === "ls" || cmd === "ll") {
+            const folderList = dirData.folders
+              .map((f) => `[DIR]  ${f}`)
+              .join("\n");
+            const fileList = dirData.files.map((f) => `       ${f}`).join("\n");
+            const output =
+              (folderList ? folderList + "\n" : "") +
+              (fileList || (folderList ? "" : "(empty)"));
+            setHistory((h) => [...h, { type: "output", text: output }]);
+          } else if (cmd === "cd") {
+            if (!args) return;
+            if (args === "..") {
+              if (dirData.parent) await fetchDir(dirData.parent);
+              else
+                setHistory((h) => [
+                  ...h,
+                  { type: "error", text: "Already at root" },
+                ]);
+            } else {
+              let target = args;
+              if (!args.startsWith("/") && !args.includes(":")) {
+                const sep = dirData.sep || "/";
+                target = currentPath.endsWith(sep)
+                  ? currentPath + args
+                  : currentPath + sep + args;
+              }
+              await fetchDir(target);
+            }
+          } else if (
+            cmd === "start" ||
+            cmd === "select" ||
+            cmd === "open" ||
+            cmd === "."
+          ) {
+            onStart(currentPath);
+          } else if (cmd === "clear") setHistory([]);
+          else if (cmd === "pwd")
+            setHistory((h) => [...h, { type: "output", text: currentPath }]);
+          else
+            setHistory((h) => [
+              ...h,
+              { type: "error", text: `Command not found: ${cmd}` },
+            ]);
+        };
+
+        return (
+          <div
+            className="h-full w-full bg-black p-4 font-mono text-sm md:text-base overflow-y-auto"
+            onClick={() => inputRef.current?.focus()}
+          >
+            {history.map((line, i) => (
+              <div key={i} className="mb-1 whitespace-pre-wrap break-words">
+                {line.type === "command" ? (
+                  <span className="text-gray-400">
+                    user@photo-sorter:
+                    <span className="text-blue-400">{line.path}</span> ${" "}
+                    <span className="text-white">{line.text}</span>
+                  </span>
+                ) : line.type === "error" ? (
+                  <span className="text-red-500">{line.text}</span>
+                ) : (
+                  <span className="text-[#33ff00]">{line.text}</span>
+                )}
+              </div>
+            ))}
+            <div className="flex items-center text-gray-400 mt-2">
+              <span className="mr-2">
+                user@photo-sorter:
+                <span className="text-blue-400">{currentPath}</span> $
+              </span>
+              <input
+                ref={inputRef}
+                type="text"
+                className="bg-transparent border-none outline-none text-white flex-1"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleCommand}
+                autoComplete="off"
+                autoFocus
+              />
+            </div>
+            <div ref={endRef} className="h-4" />
+          </div>
+        );
+      }
+
+      // --- MAIN APP COMPONENT ---
       function App() {
+        const [mode, setMode] = useState("terminal");
         const [path, setPath] = useState("");
         const [groups, setGroups] = useState([]);
         const [currentIndex, setCurrentIndex] = useState(0);
         const [loading, setLoading] = useState(false);
 
+        // GUI State
         const [gifPreviewUrl, setGifPreviewUrl] = useState(null);
         const [gifMode, setGifMode] = useState("normal");
         const [viewMode, setViewMode] = useState("image");
         const [processing, setProcessing] = useState(false);
-
-        // Interaction State
         const [filesToTrash, setFilesToTrash] = useState(new Set());
         const [showNameModal, setShowNameModal] = useState(false);
         const [placeNameInput, setPlaceNameInput] = useState("");
@@ -96,34 +271,48 @@
         const [videoDuration, setVideoDuration] = useState(0);
         const [trimStart, setTrimStart] = useState(0);
         const [trimEnd, setTrimEnd] = useState(0);
-
-        // Crop State
         const [isCropping, setIsCropping] = useState(false);
         const [cropStart, setCropStart] = useState(null);
-        const [cropRect, setCropRect] = useState(null); // {x, y, w, h} in %
+        const [cropRect, setCropRect] = useState(null);
 
         const cardRef = useRef(null);
         const videoRef = useRef(null);
         const imageContainerRef = useRef(null);
 
-        const scanFolder = async () => {
+        useEffect(() => {
+          if (mode === "gui") {
+            document.body.classList.add("gui-mode");
+            document.body.style.backgroundColor = "#1a1a1a";
+            document.body.style.color = "white";
+          } else {
+            document.body.classList.remove("gui-mode");
+            document.body.style.backgroundColor = "#0d0d0d";
+            document.body.style.color = "#33ff00";
+          }
+        }, [mode]);
+
+        const startScanning = async (selectedPath) => {
+          setPath(selectedPath);
+          setMode("gui");
           setLoading(true);
           try {
             const res = await fetch("/api/scan", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ path }),
+              body: JSON.stringify({ path: selectedPath }),
             });
             const data = await res.json();
-            if (data.groups) {
+            if (data.groups && data.groups.length > 0) {
               setGroups(data.groups);
               setCurrentIndex(0);
               setViewMode("image");
             } else {
-              alert("Error scanning or folder empty");
+              alert("Folder is empty or contains no supported images.");
+              setMode("terminal");
             }
           } catch (e) {
-            alert("Connection error");
+            alert("Connection error during scan.");
+            setMode("terminal");
           }
           setLoading(false);
         };
@@ -144,8 +333,6 @@
           setIsCropping(false);
           setCropRect(null);
           setGifPreviewUrl(null);
-
-          // Reset included frames for new group
           if (groups[currentIndex]) {
             setIncludedInGif(
               new Set(groups[currentIndex].files.map((_, i) => i)),
@@ -178,43 +365,31 @@
           if (next.has(idx)) next.delete(idx);
           else next.add(idx);
           setIncludedInGif(next);
-          // If preview is active, invalidate it visually (return to image mode) so user knows to regenerate
           if (viewMode === "gif_preview") setViewMode("image");
         };
 
         const performAction = async (action, options = {}) => {
           if (processing) return;
 
-          // If User asks to save GIF, show modal first to get name
           if (action === "save_gif" && !options.placeConfirmed) {
             setShowNameModal(true);
             return;
           }
 
           setProcessing(true);
-          const actionData = {
-            action,
-            groupId: currentGroup.id,
-            ...options,
-          };
+          const actionData = { action, groupId: currentGroup.id, ...options };
 
-          // Add Edit params for Keep Image
           if (action === "keep_all" && !isVideo && !isGif) {
             actionData.rotation = rotation;
             if (cropRect) actionData.crop = cropRect;
           }
-
-          // Add Edit params for Video
           if (action === "keep_all" && isVideo) {
             actionData.rotation = rotation;
             actionData.trimStart = trimStart;
             actionData.trimEnd = trimEnd < videoDuration ? trimEnd : null;
           }
-
-          // Add Selected Indices for GIF
-          if (action === "save_gif") {
+          if (action === "save_gif")
             actionData.includedIndices = Array.from(includedInGif);
-          }
 
           if (action === "save_gif") {
             try {
@@ -261,7 +436,7 @@
 
         const generatePreview = async (mode) => {
           if (includedInGif.size === 0) {
-            alert("Please select at least one frame.");
+            alert("Select at least one frame.");
             return;
           }
           setGifMode(mode);
@@ -272,7 +447,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               groupId: currentGroup.id,
-              mode: mode,
+              mode,
               duration: 150,
               includedIndices: Array.from(includedInGif),
             }),
@@ -281,9 +456,7 @@
           setGifPreviewUrl(URL.createObjectURL(blob));
         };
 
-        // --- Edit Handlers ---
         const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
-
         const handleVideoMeta = (e) => {
           const dur = e.target.duration;
           setVideoDuration(dur);
@@ -298,7 +471,6 @@
           } else setTrimEnd(Math.max(numVal, trimStart + 0.5));
         };
 
-        // --- Crop Logic ---
         const startCrop = (e) => {
           if (!isCropping) return;
           const rect = imageContainerRef.current.getBoundingClientRect();
@@ -312,7 +484,6 @@
           const rect = imageContainerRef.current.getBoundingClientRect();
           const currentX = (e.clientX - rect.left) / rect.width;
           const currentY = (e.clientY - rect.top) / rect.height;
-
           const x = Math.min(cropStart.x, currentX);
           const y = Math.min(cropStart.y, currentY);
           const w = Math.abs(currentX - cropStart.x);
@@ -320,18 +491,15 @@
           setCropRect({ x, y, w, h });
         };
         const endCrop = () => setCropStart(null);
+        const getRotationStyle = () => ({
+          transform: `rotate(${rotation}deg) scale(${rotation % 180 !== 0 ? 0.7 : 1})`,
+          transition: "transform 0.3s",
+        });
 
-        const getRotationStyle = () => {
-          return {
-            transform: `rotate(${rotation}deg) scale(${rotation % 180 !== 0 ? 0.7 : 1})`,
-            transition: "transform 0.3s",
-          };
-        };
-
-        // Keyboard
         useEffect(() => {
           const handleKeyDown = (e) => {
-            if (processing || loading || showNameModal) return;
+            if (processing || loading || showNameModal || mode === "terminal")
+              return;
             if (e.target.tagName === "INPUT") return;
             if (viewMode === "image") {
               if (e.key === "ArrowRight") performAction("keep_all");
@@ -340,35 +508,30 @@
           };
           window.addEventListener("keydown", handleKeyDown);
           return () => window.removeEventListener("keydown", handleKeyDown);
-        }, [groups, currentIndex, viewMode, processing, showNameModal]);
+        }, [groups, currentIndex, viewMode, processing, showNameModal, mode]);
+
+        if (mode === "terminal") {
+          return <Terminal onStart={startScanning} />;
+        }
 
         if (!groups.length && !loading) {
           return (
-            <div className="flex flex-col items-center justify-center h-screen space-y-4 bg-gray-900">
-              <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
-                Photo Sorter
-              </h1>
-              <input
-                type="text"
-                placeholder="Full Path"
-                className="p-4 w-96 text-black rounded-lg"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-              />
+            <div className="flex flex-col items-center justify-center h-screen space-y-4 bg-gray-900 text-white">
+              <h1 className="text-3xl font-bold">Done!</h1>
               <button
-                onClick={scanFolder}
-                className="bg-blue-600 px-8 py-3 rounded-lg font-bold"
+                onClick={() => setMode("terminal")}
+                className="text-blue-400 hover:underline"
               >
-                Start Sorting
+                Return to Terminal
               </button>
             </div>
           );
         }
 
         return (
-          <div className="flex flex-col h-screen bg-black select-none">
+          <div className="flex flex-col h-screen select-none">
             {/* Header */}
-            <div className="h-16 bg-gray-900 flex items-center justify-between px-6 border-b border-gray-800">
+            <div className="h-14 bg-gray-900 flex items-center justify-between px-6 border-b border-gray-800 shrink-0">
               <div className="flex items-center gap-4">
                 <span className="text-xl font-bold text-gray-200">
                   {currentIndex + 1}{" "}
@@ -380,23 +543,22 @@
               </div>
               <div>
                 <button
-                  onClick={() => setGroups([])}
+                  onClick={() => setMode("terminal")}
                   className="text-red-400 text-sm hover:text-red-300"
                 >
-                  Exit
+                  Exit to Terminal
                 </button>
               </div>
             </div>
 
-            <div className="flex-1 flex items-center justify-center relative overflow-hidden">
+            <div className="flex-1 flex items-center justify-center relative overflow-hidden bg-black">
               {loading ? (
                 <div className="loading-spinner h-16 w-16 rounded-full border-4 border-gray-700"></div>
               ) : currentGroup ? (
                 <div className="relative w-full max-w-5xl h-[85vh] flex flex-col items-center justify-center p-4">
-                  {/* Modal for Naming */}
                   {showNameModal && (
                     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur">
-                      <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-96 border border-gray-700">
+                      <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-96 border border-gray-700 text-white">
                         <h3 className="text-xl font-bold mb-4">
                           Name this GIF
                         </h3>
@@ -440,17 +602,18 @@
                     </div>
                   )}
 
-                  {/* Next Image Preview (Background) */}
+                  {/* Background Preview of Next Image - Stacked Effect */}
                   {nextGroup && viewMode !== "review_sources" && (
-                    <div className="absolute top-4 left-4 right-4 bottom-4 flex flex-col items-center justify-center opacity-40 transform scale-95 pointer-events-none -z-10 bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-                      <img
-                        src={`/api/media?groupId=${nextGroup.id}&imgIndex=0`}
-                        className="w-full h-full object-contain filter grayscale"
-                      />
+                    <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none transform scale-100 rotate-6 opacity-40 translate-x-4">
+                      <div className="w-full h-full max-w-5xl p-4 flex items-center justify-center">
+                        <img
+                          src={`/api/media?groupId=${nextGroup.id}&imgIndex=0&thumb=true`}
+                          className="max-w-full max-h-full object-contain filter brightness-50"
+                        />
+                      </div>
                     </div>
                   )}
 
-                  {/* Main Active Card */}
                   <div
                     ref={cardRef}
                     className="relative w-full h-full flex flex-col items-center justify-center z-10 bg-black/50 backdrop-blur-sm rounded-xl"
@@ -479,7 +642,7 @@
                                 {isVideo && (
                                   <button
                                     onClick={handleRotate}
-                                    className="absolute top-4 right-4 z-20 bg-gray-800/80 p-2 rounded text-xs border border-gray-600"
+                                    className="absolute top-4 right-4 z-20 bg-gray-800/80 p-2 rounded text-xs border border-gray-600 text-white"
                                   >
                                     ↻ Rotate
                                   </button>
@@ -505,7 +668,6 @@
                                 )}
                               </div>
                             ) : (
-                              // IMAGE DISPLAY WITH CROP/ROTATE
                               <div className="relative w-full h-full flex items-center justify-center overflow-hidden group">
                                 <div className="absolute top-4 right-4 z-20 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
@@ -513,29 +675,30 @@
                                       setIsCropping(!isCropping);
                                       setCropRect(null);
                                     }}
-                                    className={`p-2 rounded text-xs border shadow ${isCropping ? "bg-blue-600 border-blue-400" : "bg-gray-800/80 border-gray-600"}`}
+                                    className={`p-2 rounded text-xs border shadow text-white ${isCropping ? "bg-blue-600 border-blue-400" : "bg-gray-800/80 border-gray-600"}`}
                                   >
                                     {isCropping ? "Cancel Crop" : "Crop"}
                                   </button>
                                   <button
                                     onClick={handleRotate}
-                                    className="bg-gray-800/80 p-2 rounded text-xs border border-gray-600 shadow"
+                                    className="bg-gray-800/80 p-2 rounded text-xs border border-gray-600 shadow text-white"
                                   >
                                     ↻ Rotate
                                   </button>
                                 </div>
-
+                                {/* FIXED: Vertical Image Container */}
                                 <div
                                   ref={imageContainerRef}
-                                  className={`relative max-h-full max-w-full flex items-center justify-center ${isCropping ? "cursor-crosshair" : ""}`}
+                                  className={`relative w-full h-full flex items-center justify-center ${isCropping ? "cursor-crosshair" : ""}`}
                                   style={getRotationStyle()}
                                   onMouseDown={startCrop}
                                   onMouseMove={moveCrop}
                                   onMouseUp={endCrop}
                                 >
+                                  {/* FIXED: Ensure object-contain fills available space without cropping */}
                                   <img
                                     src={`/api/media?groupId=${currentGroup.id}&imgIndex=0&thumb=false`}
-                                    className="max-h-full max-w-full object-contain pointer-events-none"
+                                    className="max-w-full max-h-full object-contain pointer-events-none shadow-2xl"
                                   />
                                   {cropRect && (
                                     <div
@@ -550,7 +713,7 @@
                                   )}
                                 </div>
                                 {isCropping && (
-                                  <div className="absolute bottom-4 bg-black/60 px-3 py-1 rounded text-xs">
+                                  <div className="absolute bottom-4 bg-black/60 px-3 py-1 rounded text-xs text-white">
                                     Drag to crop. Rotate first if needed.
                                   </div>
                                 )}
@@ -572,7 +735,6 @@
                           )}
                         </div>
 
-                        {/* Frame Selection Strip for GIF (Only for Burst Images) */}
                         {isBurst && !isVideo && !isGif && (
                           <div className="w-full mt-2 px-4 py-2 bg-gray-900 border border-gray-800 rounded-lg">
                             <div className="flex gap-2 overflow-x-auto custom-scroll pb-2">
@@ -595,7 +757,6 @@
                           </div>
                         )}
 
-                        {/* Video Trimmer */}
                         {isVideo &&
                           videoDuration > 0 &&
                           viewMode === "image" && (
@@ -645,13 +806,13 @@
                               <div className="flex bg-gray-800 p-1 rounded-lg">
                                 <button
                                   onClick={() => generatePreview("normal")}
-                                  className={`px-4 py-2 rounded ${gifMode === "normal" && viewMode === "gif_preview" ? "bg-blue-600" : "text-gray-400"}`}
+                                  className={`px-4 py-2 rounded ${gifMode === "normal" && viewMode === "gif_preview" ? "bg-blue-600 text-white" : "text-gray-400"}`}
                                 >
                                   Loop
                                 </button>
                                 <button
                                   onClick={() => generatePreview("bounce")}
-                                  className={`px-4 py-2 rounded ${gifMode === "bounce" && viewMode === "gif_preview" ? "bg-purple-600" : "text-gray-400"}`}
+                                  className={`px-4 py-2 rounded ${gifMode === "bounce" && viewMode === "gif_preview" ? "bg-purple-600 text-white" : "text-gray-400"}`}
                                 >
                                   Bounce
                                 </button>
@@ -662,13 +823,13 @@
                                     onClick={() =>
                                       performAction("save_gif", { gifMode })
                                     }
-                                    className="bg-green-600 hover:bg-green-500 px-8 py-3 rounded-lg font-bold shadow-lg"
+                                    className="bg-green-600 hover:bg-green-500 px-8 py-3 rounded-lg font-bold shadow-lg text-white"
                                   >
                                     Save GIF
                                   </button>
                                   <button
                                     onClick={() => performAction("trash_all")}
-                                    className="bg-red-600/50 hover:bg-red-600 px-6 py-3 rounded-lg font-bold"
+                                    className="bg-red-600/50 hover:bg-red-600 px-6 py-3 rounded-lg font-bold text-white"
                                   >
                                     Trash All
                                   </button>
@@ -678,7 +839,7 @@
                                 <div className="flex gap-4">
                                   <button
                                     onClick={() => performAction("keep_all")}
-                                    className="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg"
+                                    className="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg text-white"
                                   >
                                     Keep {cropRect ? "(Edited)" : ""}
                                   </button>
@@ -695,7 +856,7 @@
                             <>
                               <button
                                 onClick={() => performAction("trash_all")}
-                                className="bg-gray-800 hover:bg-red-900 border border-gray-700 hover:border-red-500 px-8 py-4 rounded-full text-xl transition flex items-center gap-2 group"
+                                className="bg-gray-800 hover:bg-red-900 border border-gray-700 hover:border-red-500 px-8 py-4 rounded-full text-xl transition flex items-center gap-2 group text-white"
                               >
                                 <span className="group-hover:scale-125 transition">
                                   🗑
@@ -704,7 +865,7 @@
                               </button>
                               <button
                                 onClick={() => performAction("keep_all")}
-                                className="bg-blue-600 hover:bg-blue-500 px-10 py-4 rounded-full text-xl font-bold shadow-blue-900/50 shadow-lg transition transform hover:scale-105 flex items-center gap-2"
+                                className="bg-blue-600 hover:bg-blue-500 px-10 py-4 rounded-full text-xl font-bold shadow-blue-900/50 shadow-lg transition transform hover:scale-105 flex items-center gap-2 text-white"
                               >
                                 Keep <span className="text-2xl">→</span>
                               </button>
@@ -726,7 +887,7 @@
                                 trashIndices: Array.from(filesToTrash),
                               })
                             }
-                            className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded font-bold"
+                            className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded font-bold text-white"
                           >
                             Done
                           </button>
