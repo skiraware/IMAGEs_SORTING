@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo Sorter & GIF Maker</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        background-color: #1a1a1a;
+        color: white;
+        overflow: hidden;
+      }
+      .loading-spinner {
+        border-top-color: #3498db;
+        animation: spinner 1.5s linear infinite;
+      }
+      @keyframes spinner {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+      .custom-scroll::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      .custom-scroll::-webkit-scrollbar-track {
+        background: #333;
+      }
+      .custom-scroll::-webkit-scrollbar-thumb {
+        background: #555;
+        border-radius: 4px;
+      }
+
+      input[type="range"] {
+        -webkit-appearance: none;
+        background: transparent;
+        pointer-events: none;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        height: 16px;
+        width: 16px;
+        border-radius: 50%;
+        background: #3b82f6;
+        cursor: pointer;
+        pointer-events: auto;
+        margin-top: -6px;
+        box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+      }
+      input[type="range"]::-webkit-slider-runnable-track {
+        width: 100%;
+        height: 4px;
+        cursor: pointer;
+        background: transparent;
+      }
+
+      .crop-selection {
+        border: 2px dashed #3498db;
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef } = React;
+
+      function App() {
+        const [path, setPath] = useState("");
+        const [groups, setGroups] = useState([]);
+        const [currentIndex, setCurrentIndex] = useState(0);
+        const [loading, setLoading] = useState(false);
+
+        const [gifPreviewUrl, setGifPreviewUrl] = useState(null);
+        const [gifMode, setGifMode] = useState("normal");
+        const [viewMode, setViewMode] = useState("image");
+        const [processing, setProcessing] = useState(false);
+
+        // Interaction State
+        const [filesToTrash, setFilesToTrash] = useState(new Set());
+        const [showNameModal, setShowNameModal] = useState(false);
+        const [placeNameInput, setPlaceNameInput] = useState("");
+        const [includedInGif, setIncludedInGif] = useState(new Set());
+
+        // Image/Video Editing State
+        const [rotation, setRotation] = useState(0);
+        const [videoDuration, setVideoDuration] = useState(0);
+        const [trimStart, setTrimStart] = useState(0);
+        const [trimEnd, setTrimEnd] = useState(0);
+
+        // Crop State
+        const [isCropping, setIsCropping] = useState(false);
+        const [cropStart, setCropStart] = useState(null);
+        const [cropRect, setCropRect] = useState(null); // {x, y, w, h} in %
+
+        const cardRef = useRef(null);
+        const videoRef = useRef(null);
+        const imageContainerRef = useRef(null);
+
+        const scanFolder = async () => {
+          setLoading(true);
+          try {
+            const res = await fetch("/api/scan", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ path }),
+            });
+            const data = await res.json();
+            if (data.groups) {
+              setGroups(data.groups);
+              setCurrentIndex(0);
+              setViewMode("image");
+            } else {
+              alert("Error scanning or folder empty");
+            }
+          } catch (e) {
+            alert("Connection error");
+          }
+          setLoading(false);
+        };
+
+        const currentGroup = groups[currentIndex];
+        const nextGroup =
+          currentIndex + 1 < groups.length ? groups[currentIndex + 1] : null;
+
+        const isBurst = currentGroup?.count > 1;
+        const isVideo = currentGroup?.type === "video";
+        const isGif = currentGroup?.type === "gif";
+
+        useEffect(() => {
+          setRotation(0);
+          setTrimStart(0);
+          setTrimEnd(0);
+          setVideoDuration(0);
+          setIsCropping(false);
+          setCropRect(null);
+          setGifPreviewUrl(null);
+
+          // Reset included frames for new group
+          if (groups[currentIndex]) {
+            setIncludedInGif(
+              new Set(groups[currentIndex].files.map((_, i) => i)),
+            );
+          }
+        }, [currentIndex, groups]);
+
+        const animateSwipe = (direction, callback) => {
+          if (!cardRef.current) {
+            callback();
+            return;
+          }
+          const xMove = direction === "left" ? -500 : 500;
+          const rot = direction === "left" ? -20 : 20;
+          gsap.to(cardRef.current, {
+            x: xMove,
+            rotation: rot,
+            opacity: 0,
+            duration: 0.4,
+            onComplete: () => {
+              callback();
+              if (cardRef.current)
+                gsap.set(cardRef.current, { x: 0, rotation: 0, opacity: 1 });
+            },
+          });
+        };
+
+        const toggleGifFrame = (idx) => {
+          const next = new Set(includedInGif);
+          if (next.has(idx)) next.delete(idx);
+          else next.add(idx);
+          setIncludedInGif(next);
+          // If preview is active, invalidate it visually (return to image mode) so user knows to regenerate
+          if (viewMode === "gif_preview") setViewMode("image");
+        };
+
+        const performAction = async (action, options = {}) => {
+          if (processing) return;
+
+          // If User asks to save GIF, show modal first to get name
+          if (action === "save_gif" && !options.placeConfirmed) {
+            setShowNameModal(true);
+            return;
+          }
+
+          setProcessing(true);
+          const actionData = {
+            action,
+            groupId: currentGroup.id,
+            ...options,
+          };
+
+          // Add Edit params for Keep Image
+          if (action === "keep_all" && !isVideo && !isGif) {
+            actionData.rotation = rotation;
+            if (cropRect) actionData.crop = cropRect;
+          }
+
+          // Add Edit params for Video
+          if (action === "keep_all" && isVideo) {
+            actionData.rotation = rotation;
+            actionData.trimStart = trimStart;
+            actionData.trimEnd = trimEnd < videoDuration ? trimEnd : null;
+          }
+
+          // Add Selected Indices for GIF
+          if (action === "save_gif") {
+            actionData.includedIndices = Array.from(includedInGif);
+          }
+
+          if (action === "save_gif") {
+            try {
+              await fetch("/api/action", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(actionData),
+              });
+              setViewMode("review_sources");
+              setFilesToTrash(new Set());
+              setShowNameModal(false);
+            } catch (e) {
+              alert("Failed to save GIF");
+            }
+            setProcessing(false);
+            return;
+          }
+
+          const execute = async () => {
+            try {
+              await fetch("/api/action", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(actionData),
+              });
+              const newGroups = [...groups];
+              newGroups.splice(currentIndex, 1);
+              setGroups(newGroups);
+              setViewMode("image");
+              setPlaceNameInput("");
+            } catch (e) {
+              alert("Action Failed");
+            }
+            setProcessing(false);
+          };
+
+          const direction =
+            action === "trash_all" ||
+            (action === "batch_organize" && options.trashIndices?.length > 0)
+              ? "left"
+              : "right";
+          animateSwipe(direction, execute);
+        };
+
+        const generatePreview = async (mode) => {
+          if (includedInGif.size === 0) {
+            alert("Please select at least one frame.");
+            return;
+          }
+          setGifMode(mode);
+          setGifPreviewUrl(null);
+          setViewMode("gif_preview");
+          const res = await fetch("/api/generate_preview_gif", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              groupId: currentGroup.id,
+              mode: mode,
+              duration: 150,
+              includedIndices: Array.from(includedInGif),
+            }),
+          });
+          const blob = await res.blob();
+          setGifPreviewUrl(URL.createObjectURL(blob));
+        };
+
+        // --- Edit Handlers ---
+        const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
+
+        const handleVideoMeta = (e) => {
+          const dur = e.target.duration;
+          setVideoDuration(dur);
+          setTrimStart(0);
+          setTrimEnd(dur);
+        };
+        const handleTrim = (type, val) => {
+          const numVal = parseFloat(val);
+          if (type === "start") {
+            setTrimStart(Math.min(numVal, trimEnd - 0.5));
+            if (videoRef.current) videoRef.current.currentTime = numVal;
+          } else setTrimEnd(Math.max(numVal, trimStart + 0.5));
+        };
+
+        // --- Crop Logic ---
+        const startCrop = (e) => {
+          if (!isCropping) return;
+          const rect = imageContainerRef.current.getBoundingClientRect();
+          const x = (e.clientX - rect.left) / rect.width;
+          const y = (e.clientY - rect.top) / rect.height;
+          setCropStart({ x, y });
+          setCropRect({ x, y, w: 0, h: 0 });
+        };
+        const moveCrop = (e) => {
+          if (!isCropping || !cropStart) return;
+          const rect = imageContainerRef.current.getBoundingClientRect();
+          const currentX = (e.clientX - rect.left) / rect.width;
+          const currentY = (e.clientY - rect.top) / rect.height;
+
+          const x = Math.min(cropStart.x, currentX);
+          const y = Math.min(cropStart.y, currentY);
+          const w = Math.abs(currentX - cropStart.x);
+          const h = Math.abs(currentY - cropStart.y);
+          setCropRect({ x, y, w, h });
+        };
+        const endCrop = () => setCropStart(null);
+
+        const getRotationStyle = () => {
+          return {
+            transform: `rotate(${rotation}deg) scale(${rotation % 180 !== 0 ? 0.7 : 1})`,
+            transition: "transform 0.3s",
+          };
+        };
+
+        // Keyboard
+        useEffect(() => {
+          const handleKeyDown = (e) => {
+            if (processing || loading || showNameModal) return;
+            if (e.target.tagName === "INPUT") return;
+            if (viewMode === "image") {
+              if (e.key === "ArrowRight") performAction("keep_all");
+              if (e.key === "ArrowLeft") performAction("trash_all");
+            }
+          };
+          window.addEventListener("keydown", handleKeyDown);
+          return () => window.removeEventListener("keydown", handleKeyDown);
+        }, [groups, currentIndex, viewMode, processing, showNameModal]);
+
+        if (!groups.length && !loading) {
+          return (
+            <div className="flex flex-col items-center justify-center h-screen space-y-4 bg-gray-900">
+              <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
+                Photo Sorter
+              </h1>
+              <input
+                type="text"
+                placeholder="Full Path"
+                className="p-4 w-96 text-black rounded-lg"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+              />
+              <button
+                onClick={scanFolder}
+                className="bg-blue-600 px-8 py-3 rounded-lg font-bold"
+              >
+                Start Sorting
+              </button>
+            </div>
+          );
+        }
+
+        return (
+          <div className="flex flex-col h-screen bg-black select-none">
+            {/* Header */}
+            <div className="h-16 bg-gray-900 flex items-center justify-between px-6 border-b border-gray-800">
+              <div className="flex items-center gap-4">
+                <span className="text-xl font-bold text-gray-200">
+                  {currentIndex + 1}{" "}
+                  <span className="text-gray-600">/ {groups.length}</span>
+                </span>
+                <span className="text-sm text-gray-500 font-mono hidden md:block truncate max-w-md">
+                  {path}
+                </span>
+              </div>
+              <div>
+                <button
+                  onClick={() => setGroups([])}
+                  className="text-red-400 text-sm hover:text-red-300"
+                >
+                  Exit
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 flex items-center justify-center relative overflow-hidden">
+              {loading ? (
+                <div className="loading-spinner h-16 w-16 rounded-full border-4 border-gray-700"></div>
+              ) : currentGroup ? (
+                <div className="relative w-full max-w-5xl h-[85vh] flex flex-col items-center justify-center p-4">
+                  {/* Modal for Naming */}
+                  {showNameModal && (
+                    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur">
+                      <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-96 border border-gray-700">
+                        <h3 className="text-xl font-bold mb-4">
+                          Name this GIF
+                        </h3>
+                        <input
+                          autoFocus
+                          type="text"
+                          placeholder="e.g. Kitchen_Dance"
+                          className="w-full p-3 bg-gray-900 border border-gray-600 rounded mb-6 text-white outline-none focus:border-blue-500"
+                          value={placeNameInput}
+                          onChange={(e) => setPlaceNameInput(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" &&
+                            performAction("save_gif", {
+                              place: placeNameInput,
+                              gifMode: gifMode,
+                              placeConfirmed: true,
+                            })
+                          }
+                        />
+                        <div className="flex justify-end gap-3">
+                          <button
+                            onClick={() => setShowNameModal(false)}
+                            className="px-4 py-2 text-gray-400 hover:text-white"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() =>
+                              performAction("save_gif", {
+                                place: placeNameInput,
+                                gifMode: gifMode,
+                                placeConfirmed: true,
+                              })
+                            }
+                            className="px-6 py-2 bg-blue-600 rounded font-bold hover:bg-blue-500"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Next Image Preview (Background) */}
+                  {nextGroup && viewMode !== "review_sources" && (
+                    <div className="absolute top-4 left-4 right-4 bottom-4 flex flex-col items-center justify-center opacity-40 transform scale-95 pointer-events-none -z-10 bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+                      <img
+                        src={`/api/media?groupId=${nextGroup.id}&imgIndex=0`}
+                        className="w-full h-full object-contain filter grayscale"
+                      />
+                    </div>
+                  )}
+
+                  {/* Main Active Card */}
+                  <div
+                    ref={cardRef}
+                    className="relative w-full h-full flex flex-col items-center justify-center z-10 bg-black/50 backdrop-blur-sm rounded-xl"
+                  >
+                    {processing && (
+                      <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/60 rounded-xl backdrop-blur-sm">
+                        <div className="loading-spinner h-12 w-12 rounded-full border-4 border-white mb-4"></div>
+                        <div className="text-white font-bold animate-pulse">
+                          Processing...
+                        </div>
+                      </div>
+                    )}
+
+                    {viewMode !== "review_sources" && (
+                      <>
+                        {isBurst && (
+                          <div className="absolute top-0 transform -translate-y-full mb-2 bg-orange-600 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg">
+                            BURST ({currentGroup.count})
+                          </div>
+                        )}
+
+                        <div className="relative w-full flex-1 min-h-0 flex flex-col items-center justify-center bg-gray-900 border border-gray-800 rounded-xl overflow-hidden p-2">
+                          {viewMode === "image" ? (
+                            isVideo || isGif ? (
+                              <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
+                                {isVideo && (
+                                  <button
+                                    onClick={handleRotate}
+                                    className="absolute top-4 right-4 z-20 bg-gray-800/80 p-2 rounded text-xs border border-gray-600"
+                                  >
+                                    ↻ Rotate
+                                  </button>
+                                )}
+                                {isVideo ? (
+                                  <video
+                                    ref={videoRef}
+                                    controls
+                                    autoPlay
+                                    loop
+                                    muted
+                                    playsInline
+                                    src={`/api/media?groupId=${currentGroup.id}&imgIndex=0`}
+                                    onLoadedMetadata={handleVideoMeta}
+                                    className="max-h-full max-w-full object-contain"
+                                    style={getRotationStyle()}
+                                  />
+                                ) : (
+                                  <img
+                                    src={`/api/media?groupId=${currentGroup.id}&imgIndex=0`}
+                                    className="max-h-full max-w-full object-contain"
+                                  />
+                                )}
+                              </div>
+                            ) : (
+                              // IMAGE DISPLAY WITH CROP/ROTATE
+                              <div className="relative w-full h-full flex items-center justify-center overflow-hidden group">
+                                <div className="absolute top-4 right-4 z-20 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={() => {
+                                      setIsCropping(!isCropping);
+                                      setCropRect(null);
+                                    }}
+                                    className={`p-2 rounded text-xs border shadow ${isCropping ? "bg-blue-600 border-blue-400" : "bg-gray-800/80 border-gray-600"}`}
+                                  >
+                                    {isCropping ? "Cancel Crop" : "Crop"}
+                                  </button>
+                                  <button
+                                    onClick={handleRotate}
+                                    className="bg-gray-800/80 p-2 rounded text-xs border border-gray-600 shadow"
+                                  >
+                                    ↻ Rotate
+                                  </button>
+                                </div>
+
+                                <div
+                                  ref={imageContainerRef}
+                                  className={`relative max-h-full max-w-full flex items-center justify-center ${isCropping ? "cursor-crosshair" : ""}`}
+                                  style={getRotationStyle()}
+                                  onMouseDown={startCrop}
+                                  onMouseMove={moveCrop}
+                                  onMouseUp={endCrop}
+                                >
+                                  <img
+                                    src={`/api/media?groupId=${currentGroup.id}&imgIndex=0&thumb=false`}
+                                    className="max-h-full max-w-full object-contain pointer-events-none"
+                                  />
+                                  {cropRect && (
+                                    <div
+                                      className="absolute crop-selection"
+                                      style={{
+                                        left: `${cropRect.x * 100}%`,
+                                        top: `${cropRect.y * 100}%`,
+                                        width: `${cropRect.w * 100}%`,
+                                        height: `${cropRect.h * 100}%`,
+                                      }}
+                                    ></div>
+                                  )}
+                                </div>
+                                {isCropping && (
+                                  <div className="absolute bottom-4 bg-black/60 px-3 py-1 rounded text-xs">
+                                    Drag to crop. Rotate first if needed.
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          ) : (
+                            <div className="flex flex-col items-center justify-center h-full w-full bg-gray-800">
+                              {gifPreviewUrl ? (
+                                <img
+                                  src={gifPreviewUrl}
+                                  className="object-contain h-full w-full"
+                                />
+                              ) : (
+                                <div className="text-blue-400 animate-pulse">
+                                  Generating GIF...
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Frame Selection Strip for GIF (Only for Burst Images) */}
+                        {isBurst && !isVideo && !isGif && (
+                          <div className="w-full mt-2 px-4 py-2 bg-gray-900 border border-gray-800 rounded-lg">
+                            <div className="flex gap-2 overflow-x-auto custom-scroll pb-2">
+                              {currentGroup.files.map((file, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => toggleGifFrame(idx)}
+                                  className={`relative w-16 h-16 flex-shrink-0 cursor-pointer border-2 rounded overflow-hidden transition-all ${includedInGif.has(idx) ? "border-green-500 opacity-100 scale-100" : "border-gray-700 opacity-40 scale-95"}`}
+                                >
+                                  <img
+                                    src={`/api/media?groupId=${currentGroup.id}&imgIndex=${idx}&thumb=true`}
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="text-center text-xs text-gray-500 mt-1">
+                              Select frames for GIF
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Video Trimmer */}
+                        {isVideo &&
+                          videoDuration > 0 &&
+                          viewMode === "image" && (
+                            <div className="w-full mt-4 px-4 py-3 bg-gray-800 rounded-lg border border-gray-700">
+                              <div className="flex justify-between text-xs text-gray-400 mb-2 font-mono">
+                                <span>Start: {trimStart.toFixed(1)}s</span>
+                                <span>End: {trimEnd.toFixed(1)}s</span>
+                              </div>
+                              <div className="relative h-6 w-full">
+                                <div className="absolute top-1/2 left-0 w-full h-1 bg-gray-600 rounded transform -translate-y-1/2"></div>
+                                <div
+                                  className="absolute top-1/2 h-1 bg-blue-500 rounded transform -translate-y-1/2"
+                                  style={{
+                                    left: `${(trimStart / videoDuration) * 100}%`,
+                                    right: `${100 - (trimEnd / videoDuration) * 100}%`,
+                                  }}
+                                ></div>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max={videoDuration}
+                                  step="0.1"
+                                  value={trimStart}
+                                  onChange={(e) =>
+                                    handleTrim("start", e.target.value)
+                                  }
+                                  className="absolute top-0 left-0 w-full z-10"
+                                />
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max={videoDuration}
+                                  step="0.1"
+                                  value={trimEnd}
+                                  onChange={(e) =>
+                                    handleTrim("end", e.target.value)
+                                  }
+                                  className="absolute top-0 left-0 w-full z-20"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                        <div className="mt-6 flex gap-6 items-center">
+                          {isBurst && !isVideo && !isGif ? (
+                            <div className="flex flex-col items-center gap-4">
+                              <div className="flex bg-gray-800 p-1 rounded-lg">
+                                <button
+                                  onClick={() => generatePreview("normal")}
+                                  className={`px-4 py-2 rounded ${gifMode === "normal" && viewMode === "gif_preview" ? "bg-blue-600" : "text-gray-400"}`}
+                                >
+                                  Loop
+                                </button>
+                                <button
+                                  onClick={() => generatePreview("bounce")}
+                                  className={`px-4 py-2 rounded ${gifMode === "bounce" && viewMode === "gif_preview" ? "bg-purple-600" : "text-gray-400"}`}
+                                >
+                                  Bounce
+                                </button>
+                              </div>
+                              {viewMode === "gif_preview" && gifPreviewUrl && (
+                                <div className="flex gap-4">
+                                  <button
+                                    onClick={() =>
+                                      performAction("save_gif", { gifMode })
+                                    }
+                                    className="bg-green-600 hover:bg-green-500 px-8 py-3 rounded-lg font-bold shadow-lg"
+                                  >
+                                    Save GIF
+                                  </button>
+                                  <button
+                                    onClick={() => performAction("trash_all")}
+                                    className="bg-red-600/50 hover:bg-red-600 px-6 py-3 rounded-lg font-bold"
+                                  >
+                                    Trash All
+                                  </button>
+                                </div>
+                              )}
+                              {viewMode === "image" && (
+                                <div className="flex gap-4">
+                                  <button
+                                    onClick={() => performAction("keep_all")}
+                                    className="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg"
+                                  >
+                                    Keep {cropRect ? "(Edited)" : ""}
+                                  </button>
+                                  <button
+                                    onClick={() => performAction("trash_all")}
+                                    className="bg-red-900/50 hover:bg-red-800 px-6 py-2 rounded-lg text-red-200"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => performAction("trash_all")}
+                                className="bg-gray-800 hover:bg-red-900 border border-gray-700 hover:border-red-500 px-8 py-4 rounded-full text-xl transition flex items-center gap-2 group"
+                              >
+                                <span className="group-hover:scale-125 transition">
+                                  🗑
+                                </span>{" "}
+                                Trash
+                              </button>
+                              <button
+                                onClick={() => performAction("keep_all")}
+                                className="bg-blue-600 hover:bg-blue-500 px-10 py-4 rounded-full text-xl font-bold shadow-blue-900/50 shadow-lg transition transform hover:scale-105 flex items-center gap-2"
+                              >
+                                Keep <span className="text-2xl">→</span>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    {viewMode === "review_sources" && (
+                      <div className="w-full h-full flex flex-col">
+                        <div className="mb-4 flex justify-between items-center">
+                          <h2 className="text-xl font-bold text-green-400">
+                            GIF Saved! Review Original Photos:
+                          </h2>
+                          <button
+                            onClick={() =>
+                              performAction("batch_organize", {
+                                trashIndices: Array.from(filesToTrash),
+                              })
+                            }
+                            className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded font-bold"
+                          >
+                            Done
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto custom-scroll p-4 bg-gray-900 rounded-lg grid grid-cols-5 gap-4">
+                          {currentGroup.files.map((file, idx) => (
+                            <div
+                              key={idx}
+                              onClick={() => {
+                                const s = new Set(filesToTrash);
+                                s.has(idx) ? s.delete(idx) : s.add(idx);
+                                setFilesToTrash(s);
+                              }}
+                              className={`relative aspect-square cursor-pointer rounded border-4 ${filesToTrash.has(idx) ? "border-red-600 opacity-50" : "border-transparent"}`}
+                            >
+                              <img
+                                src={`/api/media?groupId=${currentGroup.id}&imgIndex=${idx}`}
+                                className="w-full h-full object-cover"
+                              />
+                              {filesToTrash.has(idx) && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                  <span className="text-4xl">🗑</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-2xl text-gray-500">Folder Empty</div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
