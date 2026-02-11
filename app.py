@@ -58,7 +58,8 @@ class ImageManager:
 
     def scan_folder(self, folder_path, time_threshold=2.0):
         self.current_folder = folder_path
-        extensions = ("*.jpg", "*.jpeg", "*.png", "*.heic", "*.HEIC", "*.JPG", "*.PNG", "*.mov", "*.MOV", "*.mp4", "*.gif")
+        # Added *.MP4 specifically for case-sensitive filesystems or specific camera outputs
+        extensions = ("*.jpg", "*.jpeg", "*.png", "*.heic", "*.HEIC", "*.JPG", "*.PNG", "*.mov", "*.MOV", "*.mp4", "*.MP4", "*.gif")
         files = []
         for ext in extensions:
             files.extend(glob.glob(os.path.join(folder_path, ext)))
@@ -126,18 +127,13 @@ def index():
 def browse_folder():
     """
     Simulates 'ls' and helps with directory navigation.
-    Input: { "path": "/path/to/folder" } (Optional, defaults to User Home)
-    Output: { "current_path": "...", "folders": [...], "files": [...], "parent": "..." }
     """
     data = request.json
     path = data.get('path')
     
-    # Default to user home directory if no path provided (avoids Root level start)
+    # Default to user home directory if no path provided
     if not path:
         path = os.path.expanduser("~")
-    
-    # Handle ".." or simple cd logic if passed in path string, 
-    # though os.path.abspath handles ".." resolution automatically.
     
     if not os.path.exists(path):
         return jsonify({"error": "Path not found"}), 404
@@ -162,7 +158,7 @@ def browse_folder():
         return jsonify({
             "current_path": abs_path,
             "folders": folders,
-            "files": files, # Just names to show "content exists"
+            "files": files,
             "parent": parent if parent != abs_path else None,
             "sep": os.sep
         })
