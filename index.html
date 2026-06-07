@@ -4,11 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Photo Sorter & GIF Maker</title>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script src="/static/react.development.js"></script>
+    <script src="/static/react-dom.development.js"></script>
+    <script src="/static/babel.min.js"></script>
+    <script src="/static/gsap.min.js"></script>
+    <link rel="stylesheet" href="static/tailwind.css" />
+
     <style>
       body {
         background-color: #0d0d0d;
@@ -96,7 +98,7 @@
       // --- TERMINAL COMPONENT ---
       function Terminal({ onStart }) {
         const [history, setHistory] = useState([
-          { type: "output", text: "Photo Sorter CLI v1.0" },
+          { type: "output", text: "Photo Sorter CLI v1.1" },
           {
             type: "output",
             text: 'Type "ls" to view files, "cd <folder>" to move.',
@@ -686,7 +688,6 @@
                                     ↻ Rotate
                                   </button>
                                 </div>
-                                {/* FIXED: Vertical Image Container */}
                                 <div
                                   ref={imageContainerRef}
                                   className={`relative w-full h-full flex items-center justify-center ${isCropping ? "cursor-crosshair" : ""}`}
@@ -695,7 +696,6 @@
                                   onMouseMove={moveCrop}
                                   onMouseUp={endCrop}
                                 >
-                                  {/* FIXED: Ensure object-contain fills available space without cropping */}
                                   <img
                                     src={`/api/media?groupId=${currentGroup.id}&imgIndex=0&thumb=false`}
                                     className="max-w-full max-h-full object-contain pointer-events-none shadow-2xl"
