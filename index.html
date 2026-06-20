@@ -97,11 +97,16 @@
 
       // --- TERMINAL COMPONENT ---
       function Terminal({ onStart }) {
+        // Replace your useState for 'history' with this:
         const [history, setHistory] = useState([
           { type: "output", text: "Photo Sorter CLI v1.1" },
           {
             type: "output",
             text: 'Type "ls" to view files, "cd <folder>" to move.',
+          },
+          {
+            type: "output",
+            text: 'Tip: Type "cd D:" to jump drives, or "cd .." from root to view all drives.',
           },
           {
             type: "output",

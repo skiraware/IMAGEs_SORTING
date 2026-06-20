@@ -126,7 +126,7 @@ def index():
 @app.route('/api/browse', methods=['POST'])
 def browse_folder():
     """
-    Simulates 'ls' and helps with directory navigation.
+    Simulates 'ls' and helps with directory navigation across Windows/Mac.
     """
     data = request.json
     path = data.get('path')
@@ -134,6 +134,31 @@ def browse_folder():
     # Default to user home directory if no path provided
     if not path:
         path = os.path.expanduser("~")
+        
+    import sys
+    is_windows = sys.platform.startswith('win')
+
+    # --- NEW: Virtual Windows Drive Menu ---
+    # If Windows user navigates to "DRIVES", list available letters
+    if is_windows and path == "DRIVES":
+        import string
+        drives = []
+        # Check A-Z to see which drives actually exist on this PC
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.exists(drive):
+                drives.append(letter + ":")
+        return jsonify({
+            "current_path": "DRIVES",
+            "folders": drives,
+            "files": [],
+            "parent": None,
+            "sep": "\\"
+        })
+
+    # --- NEW: Fix shorthand drive jumping (e.g., typing "cd D:") ---
+    if is_windows and isinstance(path, str) and len(path) == 2 and path[1] == ':':
+        path += '\\'
     
     if not os.path.exists(path):
         return jsonify({"error": "Path not found"}), 404
@@ -155,16 +180,22 @@ def browse_folder():
         abs_path = os.path.abspath(path)
         parent = os.path.dirname(abs_path)
         
+        # --- NEW: Catch "cd .." at a drive root to open the DRIVES menu ---
+        if is_windows and parent == abs_path:
+            parent = "DRIVES"
+        elif parent == abs_path:
+            # Native Mac/Linux behavior (stops at '/')
+            parent = None
+        
         return jsonify({
             "current_path": abs_path,
             "folders": folders,
             "files": files,
-            "parent": parent if parent != abs_path else None,
+            "parent": parent,
             "sep": os.sep
         })
     except Exception as e:
         return jsonify({"error": f"Access denied or error: {str(e)}"}), 500
-
 @app.route('/api/scan', methods=['POST'])
 def scan():
     data = request.json
